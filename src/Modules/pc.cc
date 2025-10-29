@@ -16,6 +16,7 @@ class PC : public cSimpleModule {
     string sessionCookie = ""; // Store the cookie received from server
     long httpServerAddr = -1;
     int requestCount = 0;
+    int successfulResponsesWithCookie = 0; // Track responses with valid cookie
 
   protected:
     void initialize() override {
@@ -38,11 +39,14 @@ class PC : public cSimpleModule {
                 return;
             } else if (strcmp(msg->getName(), "secondRequest") == 0) {
                 // Send second request with cookie
-                EV_INFO << "PC" << addr << " sending second HTTP request with cookie: " 
+                EV_INFO << "PC" << addr << " sending HTTP request with cookie: " 
                         << sessionCookie << "\n";
                 auto *get = mk("HTTP_GET", HTTP_GET, addr, httpServerAddr);
                 get->addPar("path").setStringValue("/");
-                get->addPar("cookie").setStringValue(sessionCookie.c_str());
+                if (!sessionCookie.empty()) {
+                    get->addPar("cookie").setStringValue(sessionCookie.c_str());
+                }
+                requestCount++;
                 send(get, "ppp$o");
                 delete msg;
                 return;
@@ -80,7 +84,25 @@ class PC : public cSimpleModule {
                 EV_INFO << "PC" << addr << " got HTTP response "
                         << msg->par("bytes").longValue() << " bytes";
                 if (sessionAware) {
-                    EV_INFO << " (session-aware/personalized response)\n";
+                    successfulResponsesWithCookie++;
+                    EV_INFO << " (session-aware/personalized response #" << successfulResponsesWithCookie << ")\n";
+                    
+                    // Check if we've received 2 successful responses with cookie
+                    if (successfulResponsesWithCookie >= 2) {
+                        EV_INFO << "PC" << addr << " discarding cookie after " 
+                                << successfulResponsesWithCookie << " successful responses\n";
+                        sessionCookie = ""; // Discard the cookie
+                        successfulResponsesWithCookie = 0; // Reset counter
+                        
+                        // Schedule a third request without cookie (after 2 seconds)
+                        secondRequestEvt = new cMessage("secondRequest");
+                        scheduleAt(simTime() + 2.0, secondRequestEvt);
+                        EV_INFO << "PC" << addr << " will request a new session cookie\n";
+                    } else {
+                        // Schedule another request with the cookie (after 2 seconds)
+                        secondRequestEvt = new cMessage("secondRequest");
+                        scheduleAt(simTime() + 2.0, secondRequestEvt);
+                    }
                 } else {
                     EV_INFO << "\n";
                 }
@@ -95,12 +117,12 @@ class PC : public cSimpleModule {
     void finish() override {
         cancelAndDelete(startEvt);
         startEvt = nullptr;
-        if (secondRequestEvt != nullptr) {
+        if (secondRequestEvt != nullptr && secondRequestEvt->isScheduled()) {
             cancelAndDelete(secondRequestEvt);
             secondRequestEvt = nullptr;
         }
         EV_INFO << "PC" << addr << " finished. Total requests sent: " << requestCount + 1 
-                << ", Cookie stored: " << (sessionCookie.empty() ? "No" : sessionCookie) << "\n";
+                << ", Cookie stored: " << (sessionCookie.empty() ? "No (discarded)" : sessionCookie) << "\n";
     }
 };
 Define_Module(PC);
